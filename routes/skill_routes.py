@@ -48,3 +48,10 @@ def add_learning_session():
     
     result, status_code = SkillController.add_learning_session(user_id, data)
     return jsonify(result), status_code
+
+@skill_bp.route('/<int:skill_id>', methods=['DELETE'])
+@jwt_required()
+def delete_skill(skill_id):
+    user_id = get_jwt_identity()
+    result, status = SkillController.delete_skill(user_id, skill_id)
+    return jsonify(result), status

@@ -2,6 +2,7 @@ from models.skill import Skill
 from models.subtopic import Subtopic
 from models.session import LearningSession
 from utils.helpers import categorize_skill, suggest_subtopics
+from utils.database import get_db_connection
 
 
 class SkillController:
@@ -11,7 +12,6 @@ class SkillController:
         Create a new skill with user topics + AI topics combined.
         Distribute target_hours across all subtopics and persist expected_hours.
         """
-        # Categorize the skill using AI
         category = categorize_skill(
             skill_data['name'],
             skill_data.get('description', '')
@@ -31,12 +31,12 @@ class SkillController:
         if not skill.save():
             return {'error': 'Failed to create skill'}, 500
 
-        # 1) User topics
+        # 1) Clean user topics
         user_topics = skill_data.get('user_subtopics', [])
         cleaned_user_topics = []
         for st in user_topics:
             title = st.get("title", "").strip()
-            if title != "":
+            if title:
                 cleaned_user_topics.append({
                     "title": title,
                     "description": st.get("description", "").strip()
@@ -73,13 +73,11 @@ class SkillController:
 
     @staticmethod
     def get_user_skills(user_id):
-        """Get all skills for a user with progress"""
         skills_data = Skill.find_by_user(user_id)
         return skills_data, 200
 
     @staticmethod
     def get_skill_detail(user_id, skill_id):
-        """Get detailed skill info, with subtopics & progress"""
         skill = Skill.find_by_id(skill_id, user_id)
         if not skill:
             return {'error': 'Skill not found'}, 404
@@ -87,7 +85,6 @@ class SkillController:
         subtopics = Subtopic.find_by_skill(skill_id)
 
         skill_data = skill.to_dict()
-        # include subtopics as dicts (they now include expected_hours)
         skill_data['subtopics'] = [st.to_dict() for st in subtopics]
 
         # Calculate progress
@@ -95,12 +92,16 @@ class SkillController:
         completed = len([st for st in subtopics if st.status == 'completed'])
         skill_data['progress'] = round((completed / total * 100) if total > 0 else 0, 1)
 
-        # compute total learned hours for this skill
+        # Compute total learning hours
         try:
-            from utils.database import get_db_connection
             conn = get_db_connection()
-            row = conn.execute('SELECT COALESCE(SUM(duration_minutes),0) as total_minutes FROM learning_sessions WHERE skill_id = ?', (skill_id,)).fetchone()
+            row = conn.execute(
+                'SELECT COALESCE(SUM(duration_minutes),0) as total_minutes '
+                'FROM learning_sessions WHERE skill_id = ?',
+                (skill_id,)
+            ).fetchone()
             conn.close()
+
             total_minutes = row['total_minutes'] if row else 0
             skill_data['learned_hours'] = round((total_minutes or 0) / 60, 1)
         except Exception:
@@ -110,47 +111,43 @@ class SkillController:
 
     @staticmethod
     def update_subtopic_status(user_id, subtopic_id, new_status):
-        """Update topic status and auto-complete skill if needed"""
         subtopic = Subtopic.find_by_id(subtopic_id)
         if not subtopic:
             return {'error': 'Subtopic not found'}, 404
 
-        # Verify skill belongs to this user
+        # Ensure skill belongs to user
         skill = Skill.find_by_id(subtopic.skill_id, user_id)
         if not skill:
             return {'error': 'Access denied'}, 403
 
-        # Prevent marking completed when there is no time logged or expected_hours is zero
+        # Prevent marking completed if no hours logged
         if new_status == 'completed':
-            try:
-                expected = float(subtopic.expected_hours or 0)
-                spent = float(subtopic.hours_spent or 0)
-            except Exception:
-                expected = 0
-                spent = 0
+            expected = float(subtopic.expected_hours or 0)
+            spent = float(subtopic.hours_spent or 0)
 
             if expected == 0 or spent == 0:
-                return {'error': 'Cannot mark completed: please log time for this topic first.'}, 422
+                return {
+                    'error': 'Cannot mark completed: please log time for this topic first.'
+                }, 422
 
         updated = subtopic.update_status(new_status)
         if not updated:
             return {'error': 'Failed to update subtopic status'}, 500
 
-        # If this topic was completed, check full skill completion
+        # Check if entire skill is completed
         if new_status == 'completed':
             all_subtopics = Subtopic.find_by_skill(subtopic.skill_id)
-            all_done = all(st.status == 'completed' for st in all_subtopics)
-
-            if all_done and skill.status != 'completed':
-                skill.mark_completed()
-                LearningSession.create_certificate(user_id, skill.id)
+            if all(st.status == 'completed' for st in all_subtopics):
+                if skill.status != 'completed':
+                    skill.mark_completed()
+                    LearningSession.create_certificate(user_id, skill.id)
 
                 return {
                     'message': 'Subtopic completed + skill completed!',
                     'skill_completed': True
                 }, 200
 
-        # If started, ensure skill status becomes in-progress
+        # Start skill automatically
         if new_status == 'in-progress' and skill.status != 'in-progress':
             skill.status = 'in-progress'
             skill.save()
@@ -159,15 +156,16 @@ class SkillController:
 
     @staticmethod
     def add_learning_session(user_id, session_data):
-        """Log learning session + update subtopic hours & skill state"""
-        # basic validation
+        # Validate minutes
         try:
             minutes = int(session_data.get('duration_minutes', 0))
-        except Exception:
+        except:
             minutes = 0
+
         if minutes <= 0:
             return {'error': 'Invalid session duration'}, 422
 
+        # Save session
         session = LearningSession(
             user_id=user_id,
             skill_id=session_data['skill_id'],
@@ -180,27 +178,48 @@ class SkillController:
         if not session.save():
             return {'error': 'Failed to record learning session'}, 500
 
-        # Update time spent on the selected subtopic
+        # Update subtopic hours
         if session_data.get('subtopic_id'):
             st = Subtopic.find_by_id(session_data['subtopic_id'])
             if st:
-                st.add_time(session_data['duration_minutes'])
-                # If not in-progress, mark it in-progress
+                st.add_time(minutes)
+
                 if st.status not in ('in-progress', 'completed'):
                     st.update_status('in-progress')
 
-        # Ensure parent skill is marked in-progress if not completed
+        # Mark skill in-progress
         skill = Skill.find_by_id(session_data['skill_id'])
         if skill and skill.status not in ('in-progress', 'completed'):
             skill.status = 'in-progress'
             skill.save()
 
-        # Optionally check if all subtopics now completed and mark skill completed
-        all_subs = Subtopic.find_by_skill(session_data['skill_id'])
-        if all_subs:
-            all_completed = all(st.status == 'completed' for st in all_subs)
-            if all_completed and skill and skill.status != 'completed':
-                skill.mark_completed()
-                LearningSession.create_certificate(user_id, skill.id)
-
         return {'message': 'Learning session recorded'}, 201
+
+    @staticmethod
+    def delete_skill(user_id, skill_id):
+        """Delete a skill + its subtopics + certificates. KEEP learning sessions."""
+        skill = Skill.find_by_id(skill_id, user_id)
+        if not skill:
+            return {"error": "Skill not found or access denied"}, 404
+
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+
+            # Delete subtopics
+            cursor.execute("DELETE FROM subtopics WHERE skill_id = ?", (skill_id,))
+
+            # Delete certificates
+            cursor.execute("DELETE FROM certificates WHERE skill_id = ?", (skill_id,))
+
+            # Delete skill
+            cursor.execute("DELETE FROM skills WHERE id = ?", (skill_id,))
+
+            conn.commit()
+            conn.close()
+
+            return {"message": "Skill deleted successfully"}, 200
+
+        except Exception as e:
+            print("Delete error:", e)
+            return {"error": "Failed to delete skill"}, 500
