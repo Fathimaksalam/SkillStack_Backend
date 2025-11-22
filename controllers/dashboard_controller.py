@@ -7,19 +7,21 @@ class DashboardController:
     @staticmethod
     def get_dashboard_data(user_id):
         """Get comprehensive dashboard data"""
-        # Get skills with progress
+        # Get skills with progress (includes learned_hours now)
         skills_data = Skill.find_by_user(user_id)
         
-        # Get recent learning sessions
+        # Get recent learning sessions (for activity list)
         recent_sessions = LearningSession.find_by_user(user_id, limit=10)
         
         # Calculate statistics
         total_skills = len(skills_data)
         completed_skills = len([s for s in skills_data if s.get('status') == 'completed'])
         
-        total_learning_minutes = sum(
-            session['duration_minutes'] for session in recent_sessions
-        )
+        # total learning minutes across all sessions (for user)
+        conn = get_db_connection()
+        row = conn.execute('SELECT COALESCE(SUM(duration_minutes),0) as total_minutes FROM learning_sessions WHERE user_id = ?', (user_id,)).fetchone()
+        conn.close()
+        total_learning_minutes = row['total_minutes'] or 0
         
         # Calculate category breakdown
         category_breakdown = {}

@@ -54,7 +54,7 @@ class SkillController:
     
     @staticmethod
     def get_skill_detail(user_id, skill_id):
-        """Get detailed skill information"""
+        """Get detailed skill information including expected hours per subtopic and learned hours"""
         skill = Skill.find_by_id(skill_id, user_id)
         if not skill:
             return {'error': 'Skill not found'}, 404
@@ -62,13 +62,35 @@ class SkillController:
         subtopics = Subtopic.find_by_skill(skill_id)
         
         skill_data = skill.to_dict()
-        skill_data['subtopics'] = [st.to_dict() for st in subtopics]
-        
-        # Calculate overall progress
         total_subtopics = len(subtopics)
+
+        # allocate expected hours per subtopic (if target_hours set)
+        target = skill_data.get('target_hours', 0) or 0
+        expected_per = round((target / total_subtopics), 1) if total_subtopics > 0 else 0
+
+        # add each subtopic dict + expected_hours + hours_spent (already present)
+        skill_data['subtopics'] = []
+        for st in subtopics:
+            st_dict = st.to_dict()
+            st_dict['expected_hours'] = expected_per
+            skill_data['subtopics'].append(st_dict)
+        
+        # overall progress
         completed_subtopics = len([st for st in subtopics if st.status == 'completed'])
         skill_data['progress'] = round((completed_subtopics / total_subtopics * 100) if total_subtopics > 0 else 0, 1)
-        
+
+        # total learned hours for this skill
+        conn = None
+        try:
+            from utils.database import get_db_connection
+            conn = get_db_connection()
+            row = conn.execute('SELECT COALESCE(SUM(duration_minutes),0) as total_minutes FROM learning_sessions WHERE skill_id = ?', (skill_id,)).fetchone()
+            total_minutes = row['total_minutes'] if row else 0
+            skill_data['learned_hours'] = round((total_minutes or 0) / 60, 1)
+        finally:
+            if conn:
+                conn.close()
+
         return skill_data, 200
     
     @staticmethod
@@ -83,12 +105,18 @@ class SkillController:
         if not skill:
             return {'error': 'Access denied'}, 403
         
+        # Update subtopic status
         if subtopic.update_status(new_status):
-            # Check if all subtopics are completed
+            # If subtopic started/in-progress, ensure skill status is updated
+            if new_status == 'in-progress' and skill.status != 'in-progress':
+                skill.status = 'in-progress'
+                skill.save()
+
+            # If completed, check if all completed and mark skill completed
             if new_status == 'completed':
                 all_subtopics = Subtopic.find_by_skill(subtopic.skill_id)
                 all_completed = all(st.status == 'completed' for st in all_subtopics)
-                
+
                 if all_completed and skill.status != 'completed':
                     skill.mark_completed()
                     # Create certificate
@@ -97,7 +125,7 @@ class SkillController:
                         'message': 'Subtopic completed and skill marked as completed! Certificate awarded!',
                         'skill_completed': True
                     }, 200
-            
+
             return {'message': 'Subtopic status updated successfully'}, 200
         else:
             return {'error': 'Failed to update subtopic status'}, 500
@@ -120,7 +148,24 @@ class SkillController:
                 subtopic = Subtopic.find_by_id(session_data['subtopic_id'])
                 if subtopic:
                     subtopic.add_time(session_data['duration_minutes'])
+                    # If subtopic was 'to-learn', mark it in-progress
+                    if subtopic.status not in ('in-progress', 'completed'):
+                        subtopic.update_status('in-progress')
             
+            # Ensure parent skill is marked in-progress if not completed
+            skill = Skill.find_by_id(session_data['skill_id'])
+            if skill and skill.status not in ('completed', 'in-progress'):
+                skill.status = 'in-progress'
+                skill.save()
+
+            # Optionally check if all subtopics now completed and mark skill completed
+            all_subs = Subtopic.find_by_skill(session_data['skill_id'])
+            if all_subs:
+                all_completed = all(st.status == 'completed' for st in all_subs)
+                if all_completed and skill and skill.status != 'completed':
+                    skill.mark_completed()
+                    LearningSession.create_certificate(user_id, skill.id)
+
             return {'message': 'Learning session recorded successfully'}, 201
         else:
             return {'error': 'Failed to record learning session'}, 500

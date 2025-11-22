@@ -84,6 +84,15 @@ class Skill:
 
     @staticmethod
     def find_by_user(user_id):
+        """
+        Return list of skills for the user.
+        Each skill dict will include:
+            - total_subtopics
+            - completed_subtopics
+            - progress (percentage)
+            - learned_hours (sum of minutes from learning_sessions / 60)
+            - target_hours
+        """
         conn = get_db_connection()
         skills = conn.execute(
             '''SELECT s.*, 
@@ -101,9 +110,24 @@ class Skill:
         result = []
         for skill in skills:
             skill_dict = dict(skill)
-            total = skill_dict['total_subtopics']
-            completed = skill_dict['completed_subtopics']
+            total = skill_dict.get('total_subtopics') or 0
+            completed = skill_dict.get('completed_subtopics') or 0
             skill_dict['progress'] = round((completed / total * 100) if total > 0 else 0, 1)
+
+            # compute learned hours for this skill (sum of all sessions)
+            conn2 = get_db_connection()
+            learned_row = conn2.execute('''
+                SELECT COALESCE(SUM(duration_minutes), 0) as total_minutes
+                FROM learning_sessions
+                WHERE skill_id = ?
+            ''', (skill_dict['id'],)).fetchone()
+            conn2.close()
+            total_minutes = learned_row['total_minutes'] if learned_row else 0
+            skill_dict['learned_hours'] = round((total_minutes or 0) / 60, 1)
+
+            # include target_hours so frontend can show allocation
+            skill_dict['target_hours'] = skill_dict.get('target_hours', 0) or 0
+
             result.append(skill_dict)
         
         return result
