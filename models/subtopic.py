@@ -3,7 +3,7 @@ from utils.database import get_db_connection
 class Subtopic:
     def __init__(self, id=None, skill_id=None, title=None, description=None, status='to-learn',
                  hours_spent=0, difficulty='medium', notes=None, started_at=None, 
-                 completed_at=None, order_index=0):
+                 completed_at=None, order_index=0, expected_hours=0):
         self.id = id
         self.skill_id = skill_id
         self.title = title
@@ -15,11 +15,13 @@ class Subtopic:
         self.started_at = started_at
         self.completed_at = completed_at
         self.order_index = order_index
+        self.expected_hours = expected_hours
 
     @staticmethod
     def create_table():
         conn = get_db_connection()
         cursor = conn.cursor()
+        # create table (expected_hours included for new installs)
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS subtopics (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,11 +35,22 @@ class Subtopic:
                 started_at TIMESTAMP NULL,
                 completed_at TIMESTAMP NULL,
                 order_index INTEGER DEFAULT 0,
+                expected_hours REAL DEFAULT 0,
                 FOREIGN KEY (skill_id) REFERENCES skills (id)
             )
         ''')
         conn.commit()
-        conn.close()
+
+        # For existing DBs: attempt to add expected_hours column if it's missing.
+        try:
+            # this will fail if column already exists, so catch exceptions
+            cursor.execute("ALTER TABLE subtopics ADD COLUMN expected_hours REAL DEFAULT 0")
+            conn.commit()
+        except Exception:
+            # column probably exists already — ignore
+            pass
+        finally:
+            conn.close()
 
     def save(self):
         conn = get_db_connection()
@@ -47,21 +60,21 @@ class Subtopic:
                 cursor.execute('''
                     UPDATE subtopics 
                     SET title=?, description=?, status=?, hours_spent=?, difficulty=?, 
-                        notes=?, started_at=?, completed_at=?, order_index=?
+                        notes=?, started_at=?, completed_at=?, order_index=?, expected_hours=?
                     WHERE id=?
-                ''', (self.title, self.description, self.status, self.hours_spent, 
-                      self.difficulty, self.notes, self.started_at, self.completed_at, 
-                      self.order_index, self.id))
+                ''', (self.title, self.description, self.status, self.hours_spent,
+                      self.difficulty, self.notes, self.started_at, self.completed_at,
+                      self.order_index, self.expected_hours, self.id))
             else:
                 cursor.execute('''
                     INSERT INTO subtopics (skill_id, title, description, status, hours_spent, 
-                                         difficulty, notes, started_at, completed_at, order_index)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''', (self.skill_id, self.title, self.description, self.status, 
-                      self.hours_spent, self.difficulty, self.notes, self.started_at,
-                      self.completed_at, self.order_index))
+                                         difficulty, notes, started_at, completed_at, order_index, expected_hours)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (self.skill_id, self.title, self.description, self.status, self.hours_spent,
+                      self.difficulty, self.notes, self.started_at, self.completed_at,
+                      self.order_index, self.expected_hours))
                 self.id = cursor.lastrowid
-            
+
             conn.commit()
             return True
         except Exception as e:
@@ -78,7 +91,15 @@ class Subtopic:
             (skill_id,)
         ).fetchall()
         conn.close()
-        return [Subtopic(**dict(subtopic)) for subtopic in subtopics]
+        # map expected_hours to float and hours_spent to float
+        result = []
+        for sub in subtopics:
+            d = dict(sub)
+            # ensure numeric types are proper
+            d['hours_spent'] = float(d.get('hours_spent') or 0)
+            d['expected_hours'] = float(d.get('expected_hours') or 0)
+            result.append(Subtopic(**d))
+        return result
 
     @staticmethod
     def find_by_id(subtopic_id):
@@ -93,16 +114,20 @@ class Subtopic:
         from datetime import datetime
         self.status = new_status
         current_time = datetime.now().isoformat()
-        
+
         if new_status == 'in-progress' and not self.started_at:
             self.started_at = current_time
         elif new_status == 'completed' and not self.completed_at:
             self.completed_at = current_time
-        
+
         return self.save()
 
     def add_time(self, minutes):
-        self.hours_spent += minutes / 60
+        # add minutes as hours (floating)
+        try:
+            self.hours_spent = float(self.hours_spent or 0) + (minutes / 60.0)
+        except Exception:
+            self.hours_spent = (minutes / 60.0)
         return self.save()
 
     def to_dict(self):
@@ -112,10 +137,11 @@ class Subtopic:
             'title': self.title,
             'description': self.description,
             'status': self.status,
-            'hours_spent': round(self.hours_spent, 1),
+            'hours_spent': round(float(self.hours_spent or 0), 1),
             'difficulty': self.difficulty,
             'notes': self.notes,
             'started_at': self.started_at,
             'completed_at': self.completed_at,
-            'order_index': self.order_index
+            'order_index': self.order_index,
+            'expected_hours': round(float(self.expected_hours or 0), 1)
         }

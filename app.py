@@ -7,6 +7,7 @@ from utils.database import init_database
 from routes.auth_routes import auth_bp
 from routes.skill_routes import skill_bp
 from routes.dashboard_routes import dashboard_bp
+from routes.session_routes import session_bp
 
 def create_app():
     app = Flask(__name__)
@@ -15,8 +16,7 @@ def create_app():
     app.config['JWT_SECRET_KEY'] = 'skillstack-secret-key-2024-change-in-production'
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 86400  # 24 hours
 
-    # ⛔ REMOVE ALL OLD CORS LINES
-    # 🚀 APPLY CORRECT GLOBAL CORS
+   
     CORS(
         app,
         resources={r"/api/*": {
@@ -37,6 +37,7 @@ def create_app():
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(skill_bp, url_prefix='/api/skills')
     app.register_blueprint(dashboard_bp, url_prefix='/api/dashboard')
+    app.register_blueprint(session_bp, url_prefix='/api/sessions')
 
     # Health check
     @app.route('/api/health')
