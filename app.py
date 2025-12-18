@@ -9,6 +9,7 @@ from routes.skill_routes import skill_bp
 from routes.dashboard_routes import dashboard_bp
 from routes.session_routes import session_bp
 
+
 def create_app():
     app = Flask(__name__)
 
@@ -16,19 +17,22 @@ def create_app():
     app.config['JWT_SECRET_KEY'] = 'skillstack-secret-key-2024-change-in-production'
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 86400  # 24 hours
 
-   
     CORS(
         app,
         resources={r"/api/*": {
-        "origins":["http://localhost:5174", "http://127.0.0.1:5174"] ,
-        "allow_headers": ["Content-Type", "Authorization"],
-        "expose_headers": ["Content-Type", "Authorization"]
-    }},
+            "origins": [
+                "http://localhost:5174",
+                "http://127.0.0.1:5174",
+                "https://skillstack-frontend.onrender.com"
+            ],
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "expose_headers": ["Content-Type", "Authorization"]
+        }},
         supports_credentials=True
     )
 
-    # JWT setup
-    jwt = JWTManager(app)
+    JWTManager(app)
 
     # Initialize DB
     init_database()
@@ -39,7 +43,6 @@ def create_app():
     app.register_blueprint(dashboard_bp, url_prefix='/api/dashboard')
     app.register_blueprint(session_bp, url_prefix='/api/sessions')
 
-    # Health check
     @app.route('/api/health')
     def health_check():
         return jsonify({
@@ -48,23 +51,16 @@ def create_app():
             'version': '1.0.0'
         })
 
-    # Error handlers
-    @app.errorhandler(404)
-    def not_found(error):
-        return jsonify({'error': 'Endpoint not found'}), 404
-
-    @app.errorhandler(500)
-    def internal_error(error):
-        return jsonify({'error': 'Internal server error'}), 500
-
     return app
 
 
+
+app = create_app()
+
+
 if __name__ == '__main__':
-    app = create_app()
-    import os 
+    import os
     port = int(os.environ.get("PORT", 5000))
     print("🚀 Starting SkillStack Backend…")
-    print("🌐 Allowed CORS Origin: http://localhost:5174")
-    print("📊 Server running on port: {port}")
+    print(f"📊 Server running on port: {port}")
     app.run(host='0.0.0.0', port=port)
