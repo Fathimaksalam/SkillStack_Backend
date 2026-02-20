@@ -18,20 +18,13 @@ def create_app():
     app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 86400  # 24 hours
 
     CORS(
-        app,
-        resources={r"/api/*": {
-            "origins": [
-                "http://localhost:5174",
-                "http://127.0.0.1:5174",
-                "https://skillstack-frontend.onrender.com"
-            ],
-            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-            "allow_headers": ["Content-Type", "Authorization"],
-            "expose_headers": ["Content-Type", "Authorization"]
-        }},
-        supports_credentials=True
-    )
-
+    app,
+    supports_credentials=True,
+    origins=[
+        "http://localhost:5173",
+        "https://skillstack-frontend-3a8v.onrender.com"
+    ]
+)
     JWTManager(app)
 
     # Initialize DB
